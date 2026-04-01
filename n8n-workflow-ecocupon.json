@@ -1,0 +1,222 @@
+{
+  "name": "EcoCupon - Validador de Vehículos",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ecocupon",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-node",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "patente",
+              "value": "={{ $json.patente }}"
+            },
+            {
+              "name": "marca",
+              "value": "={{ $json.marca }}"
+            },
+            {
+              "name": "modelo",
+              "value": "={{ $json.modelo }}"
+            },
+            {
+              "name": "anio",
+              "value": "={{ $json.anio }}"
+            },
+            {
+              "name": "precio",
+              "value": "={{ $json.precio }}"
+            },
+            {
+              "name": "link",
+              "value": "={{ $json.link }}"
+            },
+            {
+              "name": "telefono",
+              "value": "={{ $json.telefono }}"
+            },
+            {
+              "name": "timestamp",
+              "value": "={{ $json.timestamp }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-node",
+      "name": "Normalizar Datos",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "contents",
+              "value": "=[{\"parts\": [{\"text\": \"Actúa como inspector automotriz experto en Chile.\\n\\nAnaliza este vehículo:\\nPatente: {{ $json.patente }}\\nMarca: {{ $json.marca }}\\nModelo: {{ $json.modelo }}\\nAño: {{ $json.anio }}\\nPrecio: {{ $json.precio }}\\nLink: {{ $json.link }}\\n\\nEvalúa:\\n1. Precio vs mercado\\n2. Riesgos típicos (choque, kilometraje adulterado, documentos)\\n3. Señales sospechosas en el aviso\\n4. Coherencia general\\n\\nEntrega SOLO JSON:\\n{\\n  \\\"score\\\": (1-10),\\n  \\\"riesgos\\\": [\\\"lista corta\\\"],\\n  \\\"recomendacion\\\": \\\"COMPRAR / NO COMPRAR / EVALUAR\\\",\\n  \\\"resumen\\\": \\\"máx 3 líneas\\\"\\n}\"}]}]"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "gemini-node",
+      "name": "Gemini API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parsear respuesta de Gemini\nconst geminiResponse = $input.first().json;\n\ntry {\n  const candidates = geminiResponse.candidates || [];\n  if (candidates.length === 0) {\n    return { json: { error: 'Sin respuesta de Gemini' } };\n  }\n  \n  const text = candidates[0].content?.parts?.[0]?.text || '';\n  \n  // Extraer JSON del texto\n  const jsonMatch = text.match(/\\{[\\s\\S]*\\}/);\n  if (!jsonMatch) {\n    return { json: { error: 'Formato inválido', raw: text } };\n  }\n  \n  const analisis = JSON.parse(jsonMatch[0]);\n  \n  return {\n    json: {\n      patente: $node[\"Normalizar Datos\"].first().json.patente,\n      marca: $node[\"Normalizar Datos\"].first().json.marca,\n      modelo: $node[\"Normalizar Datos\"].first().json.modelo,\n      anio: $node[\"Normalizar Datos\"].first().json.anio,\n      precio: $node[\"Normalizar Datos\"].first().json.precio,\n      link: $node[\"Normalizar Datos\"].first().json.link,\n      telefono: $node[\"Normalizar Datos\"].first().json.telefono,\n      score: analisis.score || 5,\n      riesgos: analisis.riesgos || [],\n      recomendacion: analisis.recomendacion || 'EVALUAR',\n      resumen: analisis.resumen || '',\n      timestamp: new Date().toISOString()\n    }\n  };\n} catch (error) {\n  return {\n    json: {\n      error: error.message,\n      patente: $node[\"Normalizar Datos\"].first().json.patente,\n      score: 5,\n      riesgos: ['Error al analizar'],\n      recomendacion: 'EVALUAR'\n    }\n  };\n}"
+      },
+      "id": "function-node",
+      "name": "Parsear Respuesta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO leads_autos (patente, marca, modelo, anio, precio, link, telefono, score, riesgos, recomendacion, created_at) VALUES ('{{ $json.patente }}', '{{ $json.marca }}', '{{ $json.modelo }}', '{{ $json.anio }}', '{{ $json.precio }}', '{{ $json.link }}', '{{ $json.telefono }}', {{ $json.score }}, '{{ $json.riesgos.join(', ') }}', '{{ $json.recomendacion }}', NOW())",
+        "options": {}
+      },
+      "id": "supabase-node",
+      "name": "Guardar en Supabase",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1050, 300],
+      "credentials": {
+        "postgres": {
+          "id": "supabase-credentials",
+          "name": "Supabase Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"patente\": \"{{ $json.patente }}\",\n  \"score\": {{ $json.score }},\n  \"riesgos\": {{ JSON.stringify($json.riesgos) }},\n  \"recomendacion\": \"{{ $json.recomendacion }}\",\n  \"resumen\": \"{{ $json.resumen }}\"\n}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          }
+        }
+      },
+      "id": "response-node",
+      "name": "Responder al Frontend",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1250, 300]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalizar Datos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar Datos": {
+      "main": [
+        [
+          {
+            "node": "Gemini API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini API": {
+      "main": [
+        [
+          {
+            "node": "Parsear Respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parsear Respuesta": {
+      "main": [
+        [
+          {
+            "node": "Guardar en Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar en Supabase": {
+      "main": [
+        [
+          {
+            "node": "Responder al Frontend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ecocupon-validador-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "ecocupon"
+  },
+  "tags": [
+    {
+      "name": "ecocupon",
+      "id": "ecocupon-tag"
+    }
+  ]
+}
